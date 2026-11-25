@@ -7,10 +7,10 @@ Live-Ziel: <https://sebastian-bue.github.io/Bot-HQ/>
 ## Nutzen
 
 1. Seite öffnen.
-2. In den Einstellungen ein ntfy-Thema eintragen **oder** `#thema` an die Adresse hängen.
+2. In den Einstellungen ein ntfy-Thema eintragen **oder** es einmalig als Fragment an die Adresse hängen. Danach wird das Fragment entfernt.
 3. `#demo` zeigt Beispieldaten und kontaktiert ntfy nicht.
 
-Das Thema liegt nur in `localStorage` dieses Browsers. Es steht nicht im Quellcode und wird nicht mitgeliefert. Es muss ohne Zugangsschlüssel lesbar sein.
+Das Thema liegt nur in `localStorage` dieses Browsers. Es wird nicht angezeigt, steht nicht im Quellcode und wird nicht mitgeliefert. Es muss ohne Zugangsschlüssel lesbar sein.
 
 Jede Statuszeile ist JSON:
 
@@ -18,7 +18,7 @@ Jede Statuszeile ist JSON:
 {"bot":"Grok Bot","status":"working","step":"kurze Bezeichnung"}
 ```
 
-`status` ist einer von `working`, `done`, `idle`, `waiting_user`, `error`. Zeilen mit Nutzungsangaben werden angezeigt, ohne die Tafel abzubrechen.
+`status` ist einer von `working`, `done`, `idle`, `waiting_user`, `error`. Weitere Zeilen: `usage` (Wochenplan mit `total_used_pct`, `resets_at`, `bots`), `roster`, `groups`, `chat` und `looks`. Unbekannte Zeilen werden still ignoriert.
 
 - Verlauf: `https://ntfy.sh/<THEMA>/json?poll=1&since=12h`
 - Live: `https://ntfy.sh/<THEMA>/sse`

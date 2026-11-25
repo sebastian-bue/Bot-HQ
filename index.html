@@ -74,13 +74,13 @@
       <main id="inhalt">
         <p id="banner" class="banner" hidden></p>
         <section id="counters" class="counters" aria-label="Zähler" hidden></section>
+        <section id="usage" hidden></section>
         <section id="attention" class="attention glass" aria-label="Braucht dich" hidden></section>
-        <section id="notes" class="notes glass" hidden></section>
         <section id="empty" class="empty glass">
           <h2>Kein Thema gewählt</h2>
           <p>
-            Trag ein ntfy-Thema in den Einstellungen ein oder häng <code>#thema</code> an die Adresse.
-            <code>#demo</code> zeigt Beispieldaten, ohne ein echtes Thema zu speichern.
+            Trag das ntfy-Thema in den Einstellungen ein. Es bleibt nur in diesem Browser und wird nirgends angezeigt.
+            Ein Fragment in der Adresse wird übernommen und danach entfernt. <code>#demo</code> zeigt Beispieldaten.
           </p>
           <div class="actions">
             <button type="button" class="primary" id="empty-settings">Einstellungen</button>
@@ -102,22 +102,28 @@
           </button>
         </div>
         <label for="topic-input">ntfy-Thema</label>
-        <input
-          id="topic-input"
-          name="topic"
-          type="text"
-          maxlength="64"
-          spellcheck="false"
-          autocapitalize="off"
-          autocorrect="off"
-          autocomplete="off"
-          placeholder="Thema"
-          enterkeyhint="done"
-        />
+        <div class="secret-field">
+          <input
+            id="topic-input"
+            name="topic"
+            type="password"
+            maxlength="64"
+            spellcheck="false"
+            autocapitalize="off"
+            autocorrect="off"
+            autocomplete="off"
+            placeholder="Thema"
+            enterkeyhint="done"
+            aria-describedby="topic-hint"
+          />
+          <button type="button" id="toggle-topic" class="button ghost" aria-pressed="false" aria-label="Thema anzeigen">
+            Anzeigen
+          </button>
+        </div>
         <p id="topic-error" class="field-error" hidden></p>
-        <p class="hint">
-          Buchstaben, Zahlen, Bindestrich und Unterstrich. Gespeichert nur in diesem Browser. Nach dem
-          Speichern steht es auch als <code>#thema</code> in der Adresse, nie im Repository.
+        <p class="hint" id="topic-hint">
+          Buchstaben, Zahlen, Bindestrich und Unterstrich. Nur in diesem Browser gespeichert, nie angezeigt und nie im
+          Repository.
         </p>
         <fieldset>
           <legend>Erscheinungsbild</legend>

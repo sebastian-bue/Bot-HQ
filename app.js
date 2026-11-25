@@ -10,6 +10,14 @@ const TEAMS = [
   { id: "other", label: "Other", bots: [] },
 ];
 
+const TEAM_COLORS = {
+  study: "#3d6bff",
+  planning: "#0f8f78",
+  shopping: "#e0a100",
+  ops: "#6a5cff",
+  other: "#8b93a7",
+};
+
 const STATUS = {
   working: "Arbeitet",
   done: "Fertig",
@@ -63,13 +71,14 @@ const ui = {
   emptySettings: document.querySelector("#empty-settings"),
   banner: document.querySelector("#banner"),
   counters: document.querySelector("#counters"),
+  usage: document.querySelector("#usage"),
   attention: document.querySelector("#attention"),
-  notes: document.querySelector("#notes"),
   empty: document.querySelector("#empty"),
   teams: document.querySelector("#teams"),
   dialog: document.querySelector("#settings"),
   form: document.querySelector("#settings-form"),
   topic: document.querySelector("#topic-input"),
+  topicToggle: document.querySelector("#toggle-topic"),
   topicError: document.querySelector("#topic-error"),
   closeSettings: document.querySelector("#close-settings"),
   clearTopic: document.querySelector("#clear-topic"),
@@ -77,16 +86,25 @@ const ui = {
 };
 
 const bots = new Map();
-let notes = [];
 let bannerText = "";
 let mode = "empty";
 let connection = "empty";
-let activeTopic = "";
 let session = 0;
 let abortController = null;
 let activeStream = null;
 let renderSignature = "";
 let deferredInstall = null;
+
+let usagePlan = null;
+let planTime = 0;
+let rosterNames = new Set();
+let rosterTime = 0;
+let groupOverrides = new Map();
+let groupsTime = 0;
+let chatLinks = new Map();
+let chatTime = 0;
+let lookMap = new Map();
+let looksTime = 0;
 
 function storageGet(key) {
   try {
@@ -101,7 +119,7 @@ function storageSet(key, value) {
     if (value == null || value === "") localStorage.removeItem(key);
     else localStorage.setItem(key, value);
   } catch {
-    /* Private mode can block storage; the hash still works for this visit. */
+    /* Private mode can block storage. The value stays in memory for this visit. */
   }
 }
 
@@ -113,6 +131,11 @@ function currentHash() {
   } catch {
     return raw.trim();
   }
+}
+
+function clearHash() {
+  if (!location.hash) return;
+  history.replaceState(null, "", `${location.pathname}${location.search}`);
 }
 
 function currentTheme() {
@@ -158,8 +181,13 @@ function el(tag, props, kids) {
   return node;
 }
 
+function isRecord(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
 function canonicalName(name) {
   const clean = String(name).trim().replace(/\s+/g, " ");
+  if (!clean) return "";
   for (const team of TEAMS) {
     for (const bot of team.bots) {
       if (bot.toLowerCase() === clean.toLowerCase()) return bot;
@@ -168,9 +196,16 @@ function canonicalName(name) {
   return clean;
 }
 
-function teamFor(name) {
-  const team = TEAMS.find((item) => item.bots.includes(name));
-  return team ? team.id : "other";
+function canonicalTeam(label) {
+  const clean = String(label || "").trim().replace(/\s+/g, " ");
+  if (!clean) return "";
+  const known = TEAMS.find((team) => team.label.toLowerCase() === clean.toLowerCase() || team.id === clean.toLowerCase());
+  return known ? known.label : clean;
+}
+
+function teamIdFor(label) {
+  const known = TEAMS.find((team) => team.label === label);
+  return known ? known.id : "custom";
 }
 
 function hashHue(name) {
@@ -179,7 +214,62 @@ function hashHue(name) {
   return hash % 360;
 }
 
+function teamLabelFor(name) {
+  const canonical = canonicalName(name);
+  if (groupOverrides.has(canonical)) return groupOverrides.get(canonical);
+  const team = TEAMS.find((item) => item.bots.includes(canonical));
+  return team ? team.label : "Other";
+}
+
+function isDefaultBot(name) {
+  return TEAMS.some((team) => team.bots.includes(name));
+}
+
+function dotColor(label) {
+  const id = teamIdFor(label);
+  if (TEAM_COLORS[id]) return TEAM_COLORS[id];
+  return `hsl(${hashHue(label)} 62% 48%)`;
+}
+
+function safeColor(value) {
+  if (typeof value !== "string") return "";
+  const color = value.trim();
+  if (/^#(?:[0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(color)) return color;
+  if (/^(?:rgb|hsl)a?\(\s*[\d.%\s,/]+\)$/i.test(color)) return color;
+  if (/^[a-z]{3,20}$/i.test(color)) return color;
+  return "";
+}
+
+function safeChatUrl(url) {
+  if (typeof url !== "string") return "";
+  const trimmed = url.trim();
+  if (!/^(?:https?:\/\/|grokbot:)/i.test(trimmed)) return "";
+  if (/[\s<>"']/.test(trimmed)) return "";
+  return trimmed;
+}
+
+function shapeRadius(shape) {
+  switch (String(shape || "").toLowerCase()) {
+    case "square":
+      return "8px";
+    case "rounded":
+      return "30%";
+    case "squircle":
+      return "34%";
+    default:
+      return "50%";
+  }
+}
+
+function accessoryName(value) {
+  const name = String(value || "").toLowerCase();
+  return name === "ring" || name === "dot" ? name : "";
+}
+
 function avatarBackground(name) {
+  const look = lookMap.get(name);
+  const color = look ? safeColor(look.color) : "";
+  if (color) return `linear-gradient(145deg, ${color}, color-mix(in srgb, ${color} 68%, white))`;
   const preset = AVATAR[name];
   if (preset) return `linear-gradient(145deg, ${preset[0]}, ${preset[1]})`;
   const hue = hashHue(name);
@@ -194,9 +284,18 @@ function initials(name) {
 }
 
 function avatar(name, small) {
-  return el("span", { class: small ? "avatar sm" : "avatar", style: `background:${avatarBackground(name)}`, "aria-hidden": "true" }, [
-    initials(name),
-  ]);
+  const look = lookMap.get(name);
+  const accessory = look ? accessoryName(look.accessory) : "";
+  return el(
+    "span",
+    {
+      class: small ? "avatar sm" : "avatar",
+      style: `background:${avatarBackground(name)};border-radius:${shapeRadius(look && look.shape)}`,
+      "data-accessory": accessory || null,
+      "aria-hidden": "true",
+    },
+    [initials(name)],
+  );
 }
 
 function formatRelative(unix) {
@@ -206,6 +305,7 @@ function formatRelative(unix) {
   if (delta < 3600) return `vor ${Math.max(1, Math.round(delta / 60))} Min.`;
   if (delta < 86400) return `vor ${Math.max(1, Math.round(delta / 3600))} Std.`;
   return new Intl.DateTimeFormat("de-DE", {
+    timeZone: "Europe/Berlin",
     day: "numeric",
     month: "short",
     hour: "2-digit",
@@ -213,32 +313,28 @@ function formatRelative(unix) {
   }).format(new Date(unix * 1000));
 }
 
-function formatNumber(value) {
-  return typeof value === "number" ? new Intl.NumberFormat("de-DE").format(value) : String(value);
+function formatReset(iso) {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "";
+  const formatted = new Intl.DateTimeFormat("de-DE", {
+    timeZone: "Europe/Berlin",
+    weekday: "short",
+    day: "numeric",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(date);
+  return `Setzt zurück ${formatted}`;
 }
 
-function formatUsage(data) {
-  if (!data || typeof data !== "object" || Array.isArray(data)) return "";
-  const usage = data.usage ?? data.tokens ?? null;
-  if (typeof usage === "string") return usage.trim().slice(0, 160);
-  if (typeof usage === "number") return `${formatNumber(usage)} Tokens`;
-  const source = usage && typeof usage === "object" ? usage : data;
-  const hasUsage =
-    usage != null ||
-    ["input_tokens", "output_tokens", "total_tokens", "prompt_tokens", "completion_tokens", "cost"].some(
-      (key) => key in data || (usage && typeof usage === "object" && key in usage),
-    );
-  const input = source.input ?? source.input_tokens ?? source.prompt_tokens;
-  const output = source.output ?? source.output_tokens ?? source.completion_tokens;
-  const total = source.total ?? source.total_tokens;
-  const cost = source.cost ?? source.usd;
-  if (!hasUsage && input == null && output == null && total == null && cost == null) return "";
-  const parts = [];
-  if (input != null) parts.push(`${formatNumber(input)} in`);
-  if (output != null) parts.push(`${formatNumber(output)} out`);
-  if (total != null && input == null && output == null) parts.push(`${formatNumber(total)} Tokens`);
-  if (cost != null) parts.push(typeof cost === "number" ? `${formatNumber(cost)} Kosten` : String(cost));
-  return parts.join(" · ").slice(0, 160);
+function formatPct(value) {
+  return `${new Intl.NumberFormat("de-DE", { maximumFractionDigits: 1 }).format(value)} %`;
+}
+
+function clampPct(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return null;
+  return Math.min(100, Math.max(0, number));
 }
 
 function normalizeStatus(value) {
@@ -254,29 +350,63 @@ function pickString(data, keys) {
   return null;
 }
 
+function readShares(source) {
+  if (!isRecord(source)) return [];
+  const shares = [];
+  for (const [name, value] of Object.entries(source)) {
+    const bot = canonicalName(name);
+    const pct = clampPct(value);
+    if (!bot || pct == null) continue;
+    shares.push({ name: bot, pct });
+  }
+  shares.sort((a, b) => b.pct - a.pct || a.name.localeCompare(b.name, "de"));
+  return shares;
+}
+
+function readPlan(data) {
+  const candidates = [];
+  if (isRecord(data.usage)) candidates.push(data.usage);
+  candidates.push(data);
+  for (const source of candidates) {
+    const hasPct = source.total_used_pct != null && source.total_used_pct !== "";
+    const hasReset = typeof source.resets_at === "string" && source.resets_at.trim();
+    const hasBots = isRecord(source.bots);
+    if (!hasPct && !hasReset && !hasBots) continue;
+    const total = hasPct ? clampPct(source.total_used_pct) : null;
+    if (hasPct && total == null && !hasReset && !hasBots) continue;
+    return {
+      total,
+      resetsAt: hasReset ? source.resets_at.trim() : "",
+      shares: hasBots ? readShares(source.bots) : [],
+    };
+  }
+  return null;
+}
+
 function interpretObject(data) {
-  if (!data || typeof data !== "object" || Array.isArray(data)) return { kind: "note", text: "Unlesbare Meldung" };
+  if (!isRecord(data)) return { kind: "ignore" };
+  const parts = [];
+  const plan = readPlan(data);
+  if (plan) parts.push({ kind: "plan", plan });
+  if (Array.isArray(data.roster)) {
+    parts.push({
+      kind: "roster",
+      names: data.roster.filter((item) => typeof item === "string" && item.trim()),
+    });
+  }
+  if (isRecord(data.groups)) parts.push({ kind: "groups", map: data.groups });
+  if (isRecord(data.chat)) parts.push({ kind: "chat", map: data.chat });
+  if (isRecord(data.looks)) parts.push({ kind: "looks", map: data.looks });
+
   const name = pickString(data, ["bot", "name"]);
   const bot = name ? canonicalName(name) : "";
   const hadStatus = data.status != null || data.state != null;
   const status = normalizeStatus(data.status ?? data.state);
   const step = pickString(data, ["step", "label", "detail"]);
-  const usage = formatUsage(data);
-  if (hadStatus && !status) return { kind: "note", text: `Unbekannter Status${bot ? ` von ${bot}` : ""}` };
-  if (!bot && !status && !usage && step == null) return { kind: "note", text: "Unlesbare Meldung" };
-  if (!status && usage && step == null) return { kind: "usage", bot, usage };
-  if (!bot) return { kind: "note", text: usage || step || "Meldung ohne Bot" };
-  return { kind: "status", bot, status, step, usage };
-}
-
-function interpretPlain(text) {
-  const usageLine = text.match(/^(.{1,48}?)\s+usage\b[:\s-]*(.+)$/i);
-  if (usageLine) {
-    return { kind: "usage", bot: canonicalName(usageLine[1]), usage: usageLine[2].trim().slice(0, 160) };
-  }
-  if (/usage|tokens?|kosten|\bcost\b/i.test(text)) return { kind: "note", text: text.slice(0, 180) };
-  if (text.startsWith("{") || text.startsWith("[")) return { kind: "note", text: "Unlesbare Meldung" };
-  return { kind: "ignore" };
+  if (bot && hadStatus && status) parts.push({ kind: "status", bot, status, step });
+  else if (bot && step != null && !hadStatus) parts.push({ kind: "status", bot, status: "", step });
+  if (!parts.length) return { kind: "ignore" };
+  return { kind: "parts", parts };
 }
 
 function parsePayload(message) {
@@ -288,72 +418,142 @@ function parsePayload(message) {
   try {
     const data = JSON.parse(text);
     if (data && typeof data === "object") return interpretObject(data);
-    return interpretPlain(String(data));
   } catch {
-    return interpretPlain(text);
+    /* Plain lines that are not JSON are ignored. */
   }
+  return { kind: "ignore" };
 }
 
-function pushNote(text) {
-  const clean = String(text).replace(/\s+/g, " ").trim().slice(0, 180);
-  if (!clean || notes.includes(clean)) return;
-  notes.push(clean);
-  if (notes.length > 4) notes.shift();
+function newer(time, previous) {
+  return !(previous && time && time < previous);
+}
+
+function ensureBot(name) {
+  const canonical = canonicalName(name);
+  if (!canonical) return null;
+  if (!bots.has(canonical)) {
+    bots.set(canonical, { name: canonical, status: "idle", step: "", time: 0, seen: false });
+  }
+  return bots.get(canonical);
 }
 
 function resetBots() {
   bots.clear();
   for (const team of TEAMS) {
-    for (const name of team.bots) {
-      bots.set(name, { name, status: "idle", step: "", usage: "", time: 0, seen: false });
-    }
+    for (const name of team.bots) ensureBot(name);
   }
 }
 
-function applyParsed(parsed, time) {
-  if (!parsed || parsed.kind === "ignore" || parsed.kind === "empty") return;
-  if (parsed.kind === "note") {
-    pushNote(parsed.text);
-    return;
+function resetMeta() {
+  usagePlan = null;
+  planTime = 0;
+  rosterNames = new Set();
+  rosterTime = 0;
+  groupOverrides = new Map();
+  groupsTime = 0;
+  chatLinks = new Map();
+  chatTime = 0;
+  lookMap = new Map();
+  looksTime = 0;
+}
+
+function applyRoster(names, time) {
+  if (!newer(time, rosterTime)) return;
+  rosterTime = time || rosterTime;
+  const next = new Set(names.map((name) => canonicalName(name)).filter(Boolean));
+  for (const [name, bot] of bots) {
+    const fromOlderRoster = rosterNames.has(name) && !next.has(name);
+    if (fromOlderRoster && !bot.seen && !isDefaultBot(name) && !groupOverrides.has(name)) bots.delete(name);
   }
-  if (parsed.kind === "usage") {
-    const existing = parsed.bot ? bots.get(parsed.bot) : null;
-    if (!existing) {
-      pushNote(parsed.bot ? `${parsed.bot}: ${parsed.usage}` : parsed.usage);
-      return;
-    }
-    existing.usage = parsed.usage;
-    if (time) existing.time = Math.max(existing.time || 0, time);
-    return;
+  rosterNames = next;
+  for (const name of next) ensureBot(name);
+}
+
+function applyGroups(map, time) {
+  if (!newer(time, groupsTime)) return;
+  groupsTime = time || groupsTime;
+  groupOverrides = new Map();
+  for (const [name, label] of Object.entries(map)) {
+    const bot = canonicalName(name);
+    const team = canonicalTeam(label);
+    if (!bot || !team) continue;
+    groupOverrides.set(bot, team);
+    ensureBot(bot);
   }
-  const bot = bots.get(parsed.bot) || {
-    name: parsed.bot,
-    status: "idle",
-    step: "",
-    usage: "",
-    time: 0,
-    seen: false,
-  };
+}
+
+function applyChat(map, time) {
+  if (!newer(time, chatTime)) return;
+  chatTime = time || chatTime;
+  chatLinks = new Map();
+  for (const [name, url] of Object.entries(map)) {
+    const bot = canonicalName(name);
+    const href = safeChatUrl(url);
+    if (!bot || !href) continue;
+    chatLinks.set(bot, href);
+    ensureBot(bot);
+  }
+}
+
+function applyLooks(map, time) {
+  if (!newer(time, looksTime)) return;
+  looksTime = time || looksTime;
+  lookMap = new Map();
+  for (const [name, look] of Object.entries(map)) {
+    if (!isRecord(look)) continue;
+    const bot = canonicalName(name);
+    if (!bot) continue;
+    lookMap.set(bot, {
+      shape: typeof look.shape === "string" ? look.shape : "",
+      color: typeof look.color === "string" ? look.color : "",
+      accessory: typeof look.accessory === "string" ? look.accessory : "",
+    });
+    ensureBot(bot);
+  }
+}
+
+function applyPlan(plan, time) {
+  if (!newer(time, planTime)) return;
+  planTime = time || planTime;
+  usagePlan = plan;
+}
+
+function applyStatus(part, time) {
+  const bot = ensureBot(part.bot);
+  if (!bot) return;
   if (bot.time && time && time < bot.time) return;
-  bots.set(parsed.bot, bot);
-  if (parsed.status) bot.status = parsed.status;
-  if (parsed.step != null) bot.step = parsed.step;
-  if (parsed.usage) bot.usage = parsed.usage;
+  if (part.status) bot.status = part.status;
+  if (part.step != null) bot.step = part.step;
   bot.seen = true;
   if (time) bot.time = time;
+}
+
+function applyParsed(parsed, time) {
+  if (!parsed || parsed.kind === "ignore" || parsed.kind === "empty" || parsed.kind !== "parts") return;
+  for (const part of parsed.parts) {
+    if (part.kind === "plan") applyPlan(part.plan, time);
+    else if (part.kind === "roster") applyRoster(part.names, time);
+    else if (part.kind === "groups") applyGroups(part.map, time);
+    else if (part.kind === "chat") applyChat(part.map, time);
+    else if (part.kind === "looks") applyLooks(part.map, time);
+    else if (part.kind === "status") applyStatus(part, time);
+  }
 }
 
 function ingest(envelope) {
   try {
     if (!envelope || typeof envelope !== "object") return;
     if (envelope.event && envelope.event !== "message") return;
-    if (typeof envelope.message === "string" || (envelope.message && typeof envelope.message === "object")) {
-      applyParsed(parsePayload(envelope.message), Number(envelope.time) || 0);
+    const time = Number(envelope.time) || 0;
+    if (typeof envelope.message === "string" || isRecord(envelope.message)) {
+      applyParsed(parsePayload(envelope.message), time);
       return;
     }
-    if (envelope.bot || envelope.status || envelope.name) applyParsed(parsePayload(envelope), Number(envelope.time) || 0);
+    if (envelope.bot || envelope.status || envelope.name || envelope.usage || envelope.roster || envelope.groups || envelope.chat || envelope.looks || envelope.total_used_pct != null) {
+      applyParsed(parsePayload(envelope), time);
+    }
   } catch {
-    pushNote("Unlesbare Meldung");
+    /* Unreadable lines stay off the board. */
   }
 }
 
@@ -370,8 +570,7 @@ function showEmpty(message) {
   session += 1;
   closeNet();
   bots.clear();
-  notes = [];
-  activeTopic = "";
+  resetMeta();
   mode = "empty";
   connection = "empty";
   bannerText = message || "";
@@ -381,13 +580,13 @@ function showEmpty(message) {
 function showDemo() {
   session += 1;
   closeNet();
+  resetMeta();
   resetBots();
-  notes = [];
   bannerText = "";
-  activeTopic = "";
   mode = "demo";
   connection = "demo";
   const now = Math.floor(Date.now() / 1000);
+  const resetAt = new Date(now * 1000 + 3 * 24 * 60 * 60 * 1000).toISOString();
   const line = (offset, body) => ({
     time: now - offset,
     event: "message",
@@ -398,27 +597,47 @@ function showDemo() {
     line(540, { bot: "Remnote Bot", status: "done", step: "Karten exportiert" }),
     line(480, { bot: "Obsidian Bot", status: "idle", step: "Wartet auf Notiz" }),
     line(420, { bot: "Kalender Bot", status: "waiting_user", step: "Termin bestätigen" }),
-    line(400, "Kalender Bot usage: 2 Anfragen"),
     line(360, { bot: "Slack Bot", status: "working", step: "Kanal zusammenfassen" }),
     line(300, { bot: "Deal Hunter", status: "error", step: "Shop nicht erreichbar" }),
-    line(240, { bot: "Grok Bot", status: "working", step: "Antwort formulieren", usage: { input: 1240, output: 380 } }),
+    line(240, { bot: "Grok Bot", status: "working", step: "Antwort formulieren" }),
+    line(200, { total_used_pct: 12, resets_at: resetAt, bots: { "Grok Bot": 100 } }),
     line(180, { bot: "Notiz Bot", status: "idle", step: "Wartet auf Eingang" }),
     line(120, "{ this is not json"),
+    line(90, {
+      usage: {
+        total_used_pct: 64,
+        resets_at: resetAt,
+        bots: {
+          "Grok Bot": 38,
+          "Moodle Bot": 22,
+          "Slack Bot": 16,
+          "Kalender Bot": 12,
+          "Deal Hunter": 7,
+          "Remnote Bot": 5,
+        },
+      },
+    }),
+    line(80, { roster: ["Archiv Bot"] }),
+    line(70, { groups: { "Archiv Bot": "Archive" } }),
+    line(60, { chat: { "Grok Bot": "grokbot://open" } }),
+    line(50, {
+      looks: {
+        "Grok Bot": { shape: "squircle", color: "#1473e6", accessory: "ring" },
+        "Deal Hunter": { shape: "rounded", color: "#e0a100", accessory: "dot" },
+      },
+    }),
   ]) {
     ingest(item);
   }
   render();
 }
 
-// History: https://ntfy.sh/<topic>/json?poll=1&since=12h
-// Live:    https://ntfy.sh/<topic>/sse
 async function connect(topic) {
   const id = ++session;
   closeNet();
+  resetMeta();
   resetBots();
-  notes = [];
   bannerText = "";
-  activeTopic = topic;
   mode = "live";
   connection = "connecting";
   render();
@@ -441,7 +660,7 @@ async function connect(topic) {
       try {
         items.push(JSON.parse(trimmed));
       } catch {
-        pushNote("Unlesbare Meldung");
+        /* Skip a broken history line. */
       }
     }
     items.sort((a, b) => (Number(a.time) || 0) - (Number(b.time) || 0));
@@ -467,7 +686,7 @@ async function connect(topic) {
     try {
       ingest(JSON.parse(event.data));
     } catch {
-      pushNote("Unlesbare Meldung");
+      /* Ignore a live line that is not JSON. */
     }
     connection = "live";
     render();
@@ -499,13 +718,6 @@ function showTopicError(message) {
   else ui.topic.removeAttribute("aria-invalid");
 }
 
-function setHash(value) {
-  const next = value ? `#${encodeURIComponent(value)}` : "";
-  const target = `${location.pathname}${location.search}${next}`;
-  if (`${location.pathname}${location.search}${location.hash}` !== target) history.replaceState(null, "", target);
-  applyRoute();
-}
-
 function applyRoute() {
   const hash = currentHash();
   if (hash.toLowerCase() === "demo") {
@@ -513,6 +725,7 @@ function applyRoute() {
     return;
   }
   if (hash) {
+    clearHash();
     if (!TOPIC_RE.test(hash)) {
       showEmpty("Dieses URL-Fragment ist kein gültiges ntfy-Thema.");
       return;
@@ -530,12 +743,83 @@ function applyRoute() {
   showEmpty("");
 }
 
-function orderedBots(team) {
-  const known = team.bots.map((name) => bots.get(name)).filter(Boolean);
+function linkProps(url) {
+  if (!url) return null;
+  const props = { href: url };
+  if (/^https?:/i.test(url)) {
+    props.target = "_blank";
+    props.rel = "noopener noreferrer";
+  }
+  return props;
+}
+
+function botsInTeam(label) {
+  const known = TEAMS.find((team) => team.label === label);
+  const ordered = [];
+  if (known) {
+    for (const name of known.bots) {
+      const bot = bots.get(name);
+      if (bot && teamLabelFor(name) === label) ordered.push(bot);
+    }
+  }
   const extras = [...bots.values()]
-    .filter((bot) => teamFor(bot.name) === team.id && !team.bots.includes(bot.name))
+    .filter((bot) => teamLabelFor(bot.name) === label && !ordered.includes(bot))
     .sort((a, b) => a.name.localeCompare(b.name, "de"));
-  return known.concat(extras);
+  return ordered.concat(extras);
+}
+
+function teamSections() {
+  const labels = TEAMS.filter((team) => team.id !== "other").map((team) => team.label);
+  const custom = new Set();
+  for (const bot of bots.values()) {
+    const label = teamLabelFor(bot.name);
+    if (!labels.includes(label) && label !== "Other") custom.add(label);
+  }
+  return [...labels, ...[...custom].sort((a, b) => a.localeCompare(b, "de")), "Other"]
+    .map((label) => ({ label, id: teamIdFor(label), bots: botsInTeam(label) }))
+    .filter((section) => section.bots.length);
+}
+
+function renderUsage() {
+  if (!usagePlan) {
+    ui.usage.hidden = true;
+    ui.usage.replaceChildren();
+    ui.usage.className = "";
+    return;
+  }
+  const total = usagePlan.total;
+  const reset = usagePlan.resetsAt ? formatReset(usagePlan.resetsAt) : "";
+  ui.usage.hidden = false;
+  ui.usage.className = "usage-card glass";
+  ui.usage.replaceChildren(
+    el("div", { class: "section-head" }, [el("h2", null, ["Nutzung"])]),
+    el("div", { class: "usage-layout" }, [
+      el(
+        "div",
+        {
+          class: "ring",
+          style: `--pct:${total == null ? 0 : total}`,
+          role: "img",
+          "aria-label": total == null ? "Wochenplan" : `${formatPct(total)} des Wochenplans`,
+        },
+        [el("strong", null, [total == null ? "–" : formatPct(total)])],
+      ),
+      el("div", null, [
+        reset ? el("p", { class: "reset-time" }, [reset]) : null,
+        el(
+          "ul",
+          { class: "shares" },
+          usagePlan.shares.map((share) =>
+            el("li", { class: "share" }, [
+              el("span", { class: "share-name" }, [share.name]),
+              el("span", { class: "share-pct" }, [formatPct(share.pct)]),
+              el("span", { class: "bar", "aria-hidden": "true" }, [el("span", { style: `width:${share.pct}%` })]),
+            ]),
+          ),
+        ),
+      ]),
+    ]),
+  );
 }
 
 function renderBoard() {
@@ -550,6 +834,8 @@ function renderBoard() {
     ),
   );
 
+  renderUsage();
+
   const attention = [...bots.values()]
     .filter((bot) => bot.seen && (bot.status === "waiting_user" || bot.status === "error"))
     .sort((a, b) => {
@@ -563,28 +849,27 @@ function renderBoard() {
       ? el(
           "div",
           { class: "chips" },
-          attention.map((bot) =>
-            el("article", { class: "chip", "data-status": bot.status }, [
+          attention.map((bot) => {
+            const href = chatLinks.get(bot.name) || "";
+            return el(href ? "a" : "article", { class: href ? "chip" : "chip", "data-status": bot.status, ...linkProps(href) }, [
               avatar(bot.name, true),
               el("span", null, [el("strong", null, [bot.name]), el("span", null, [bot.step || STATUS[bot.status]])]),
-            ]),
-          ),
+            ]);
+          }),
         )
       : el("p", { class: "calm" }, ["Gerade braucht dich niemand."]),
   );
 
-  ui.notes.hidden = notes.length === 0;
-  ui.notes.replaceChildren(el("h2", null, ["Hinweise"]), el("ul", null, notes.map((text) => el("li", null, [text]))));
-
-  const groups = TEAMS.map((team) => ({ team, bots: orderedBots(team) })).filter(
-    (group) => group.team.id !== "other" || group.bots.length,
-  );
+  const groups = teamSections();
   ui.teams.hidden = false;
   ui.teams.replaceChildren(
     ...groups.map((group, index) => {
-      const card = el("section", { class: "team glass", "data-team": group.team.id }, [
+      const card = el("section", { class: "team glass", "data-team": group.id }, [
         el("div", { class: "team-head" }, [
-          el("h2", { class: "team-name" }, [el("span", { class: "dot", "aria-hidden": "true" }), group.team.label]),
+          el("h2", { class: "team-name" }, [
+            el("span", { class: "dot", style: `background:${dotColor(group.label)}`, "aria-hidden": "true" }),
+            group.label,
+          ]),
           el("span", { class: "team-count" }, [String(group.bots.length)]),
         ]),
         ...group.bots.map((bot) => renderBot(bot)),
@@ -597,12 +882,12 @@ function renderBoard() {
 
 function renderBot(bot) {
   const shown = bot.seen ? bot.status : "unknown";
-  return el("article", { class: "bot", "data-bot": bot.name, "data-status": shown }, [
+  const href = chatLinks.get(bot.name) || "";
+  return el(href ? "a" : "article", { class: "bot", "data-bot": bot.name, "data-status": shown, ...linkProps(href) }, [
     avatar(bot.name),
     el("div", null, [
       el("h3", null, [bot.name]),
       el("p", { class: "step" }, [bot.seen ? bot.step || "Kein Schritt genannt" : "Noch keine Meldung"]),
-      bot.usage ? el("p", { class: "usage" }, [bot.usage]) : null,
     ]),
     el("div", { class: "bot-meta" }, [
       el("span", { class: "status", "data-status": shown }, [STATUS[shown]]),
@@ -617,13 +902,17 @@ function snapshot() {
   return JSON.stringify({
     mode,
     bannerText,
-    notes,
+    usagePlan,
+    roster: [...rosterNames],
+    groups: [...groupOverrides],
+    chat: [...chatLinks],
+    looks: [...lookMap],
     bots: [...bots.values()],
   });
 }
 
 function render() {
-  ui.subtitle.textContent = mode === "demo" ? "Demo" : mode === "empty" ? "Bot-Status" : activeTopic;
+  ui.subtitle.textContent = mode === "demo" ? "Demo" : mode === "empty" ? "Bot-Status" : "Verbunden";
   ui.connection.textContent = CONNECTION_LABEL[connection] || connection;
   ui.connection.dataset.state = connection;
   ui.banner.hidden = !bannerText;
@@ -636,12 +925,13 @@ function render() {
   renderSignature = signature;
   if (!board) {
     ui.counters.hidden = true;
+    ui.usage.hidden = true;
     ui.attention.hidden = true;
-    ui.notes.hidden = true;
     ui.teams.hidden = true;
     ui.counters.replaceChildren();
+    ui.usage.replaceChildren();
+    ui.usage.className = "";
     ui.attention.replaceChildren();
-    ui.notes.replaceChildren();
     ui.teams.replaceChildren();
     return;
   }
@@ -655,9 +945,11 @@ function tickTimes() {
 }
 
 function openSettings() {
-  const hash = currentHash();
-  const stored = storageGet(STORAGE_TOPIC) || "";
-  ui.topic.value = hash && hash.toLowerCase() !== "demo" && TOPIC_RE.test(hash) ? hash : stored;
+  ui.topic.value = storageGet(STORAGE_TOPIC) || "";
+  ui.topic.type = "password";
+  ui.topicToggle.textContent = "Anzeigen";
+  ui.topicToggle.setAttribute("aria-pressed", "false");
+  ui.topicToggle.setAttribute("aria-label", "Thema anzeigen");
   showTopicError("");
   applyTheme(currentTheme());
   ui.dialog.showModal();
@@ -674,6 +966,13 @@ function bind() {
   ui.emptySettings.addEventListener("click", openSettings);
   ui.closeSettings.addEventListener("click", () => ui.dialog.close());
   ui.reload.addEventListener("click", () => applyRoute());
+  ui.topicToggle.addEventListener("click", () => {
+    const visible = ui.topic.type === "password";
+    ui.topic.type = visible ? "text" : "password";
+    ui.topicToggle.textContent = visible ? "Verbergen" : "Anzeigen";
+    ui.topicToggle.setAttribute("aria-pressed", visible ? "true" : "false");
+    ui.topicToggle.setAttribute("aria-label", visible ? "Thema verbergen" : "Thema anzeigen");
+  });
   ui.dialog.addEventListener("click", (event) => {
     if (event.target === ui.dialog) ui.dialog.close();
   });
@@ -689,7 +988,8 @@ function bind() {
     showTopicError("");
     storageSet(STORAGE_TOPIC, value);
     ui.dialog.close();
-    setHash(value);
+    clearHash();
+    connect(value);
   });
   ui.clearTopic.addEventListener("click", () => {
     storageSet(STORAGE_TOPIC, null);
@@ -697,7 +997,10 @@ function bind() {
     showTopicError("");
     ui.dialog.close();
     if (currentHash().toLowerCase() === "demo") applyRoute();
-    else setHash("");
+    else {
+      clearHash();
+      showEmpty("");
+    }
   });
   for (const link of ui.dialog.querySelectorAll('a[href="#demo"]')) {
     link.addEventListener("click", () => ui.dialog.close());
