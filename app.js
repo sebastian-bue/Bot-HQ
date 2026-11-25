@@ -1,5 +1,6 @@
 const STORAGE_TOPIC = "hq.topic";
 const STORAGE_THEME = "hq.theme";
+const INSTALL_HINT_KEY = "hq.install-hint";
 const TOPIC_RE = /^[A-Za-z0-9_-]{1,64}$/;
 
 const TEAMS = [
@@ -43,15 +44,18 @@ const STATUS_ALIAS = {
   fehler: "error",
 };
 
-const AVATAR = {
-  "Moodle Bot": ["#3d5afe", "#9eb0ff"],
-  "Remnote Bot": ["#ef6c45", "#ffb199"],
-  "Obsidian Bot": ["#6d4aff", "#c4b5ff"],
-  "Kalender Bot": ["#0f8f78", "#7ddec8"],
-  "Slack Bot": ["#c2185b", "#ff8ab3"],
-  "Deal Hunter": ["#c4840a", "#ffd27a"],
-  "Grok Bot": ["#1473e6", "#8ec5ff"],
+const DEFAULT_LOOKS = {
+  "Grok Bot": { shape: "sphere", color: "#1E86FC", accessory: "antenna" },
+  "Moodle Bot": { shape: "rounded_square", color: "#FD690F", accessory: "glasses" },
+  "Remnote Bot": { shape: "bubble", color: "#8F59F9", accessory: "none" },
+  "Obsidian Bot": { shape: "hexagon", color: "#000000", accessory: "none" },
+  "Kalender Bot": { shape: "pill", color: "#14C16F", accessory: "none" },
+  "Slack Bot": { shape: "clover", color: "#F93498", accessory: "none" },
+  "Deal Hunter": { shape: "star6", color: "#F59312", accessory: "bow" },
 };
+
+const SVG_NS = "http://www.w3.org/2000/svg";
+let mascotSeq = 0;
 
 const CONNECTION_LABEL = {
   empty: "Bereit",
@@ -67,6 +71,9 @@ const ui = {
   connection: document.querySelector("#connection"),
   reload: document.querySelector("#reload"),
   install: document.querySelector("#install"),
+  installHint: document.querySelector("#install-hint"),
+  installHintAction: document.querySelector("#install-hint-action"),
+  installHintDismiss: document.querySelector("#install-hint-dismiss"),
   openSettings: document.querySelector("#open-settings"),
   emptySettings: document.querySelector("#empty-settings"),
   banner: document.querySelector("#banner"),
@@ -156,7 +163,7 @@ function themeIsDark(theme = currentTheme()) {
 function applyTheme(theme = currentTheme()) {
   document.documentElement.dataset.theme = theme;
   const meta = document.querySelector('meta[name="theme-color"]');
-  if (meta) meta.setAttribute("content", themeIsDark(theme) ? "#07090d" : "#e7edf5");
+  if (meta) meta.setAttribute("content", themeIsDark(theme) ? "#0e0e10" : "#f3f3f5");
   for (const button of ui.themeGroup.querySelectorAll("[data-theme-choice]")) {
     const selected = button.dataset.themeChoice === theme;
     button.setAttribute("aria-checked", selected ? "true" : "false");
@@ -248,54 +255,222 @@ function safeChatUrl(url) {
   return trimmed;
 }
 
-function shapeRadius(shape) {
-  switch (String(shape || "").toLowerCase()) {
-    case "square":
-      return "8px";
-    case "rounded":
-      return "30%";
-    case "squircle":
-      return "34%";
-    default:
-      return "50%";
-  }
+function normalizeShape(value) {
+  const shape = String(value || "").trim().toLowerCase().replace(/[\s-]+/g, "_");
+  if (["sphere", "circle"].includes(shape)) return "sphere";
+  if (["rounded_square", "rounded", "squircle", "square"].includes(shape)) return "rounded_square";
+  if (["bubble", "blob"].includes(shape)) return "bubble";
+  if (["hexagon", "hex"].includes(shape)) return "hexagon";
+  if (["pill", "capsule"].includes(shape)) return "pill";
+  if (shape === "clover") return "clover";
+  if (["star6", "star"].includes(shape)) return "star6";
+  return "";
 }
 
-function accessoryName(value) {
-  const name = String(value || "").toLowerCase();
-  return name === "ring" || name === "dot" ? name : "";
+function normalizeAccessory(value) {
+  const name = String(value || "").trim().toLowerCase();
+  if (["antenna", "glasses", "bow", "none"].includes(name)) return name;
+  return "";
 }
 
-function avatarBackground(name) {
-  const look = lookMap.get(name);
-  const color = look ? safeColor(look.color) : "";
-  if (color) return `linear-gradient(145deg, ${color}, color-mix(in srgb, ${color} 68%, white))`;
-  const preset = AVATAR[name];
-  if (preset) return `linear-gradient(145deg, ${preset[0]}, ${preset[1]})`;
+function hashColor(name) {
   const hue = hashHue(name);
-  return `linear-gradient(145deg, hsl(${hue} 70% 42%), hsl(${(hue + 26) % 360} 78% 62%))`;
+  const sat = 58;
+  const light = 52;
+  const c = (1 - Math.abs((2 * light) / 100 - 1)) * (sat / 100);
+  const x = c * (1 - Math.abs(((hue / 60) % 2) - 1));
+  const m = light / 100 - c / 2;
+  let r = 0;
+  let g = 0;
+  let b = 0;
+  if (hue < 60) [r, g, b] = [c, x, 0];
+  else if (hue < 120) [r, g, b] = [x, c, 0];
+  else if (hue < 180) [r, g, b] = [0, c, x];
+  else if (hue < 240) [r, g, b] = [0, x, c];
+  else if (hue < 300) [r, g, b] = [x, 0, c];
+  else [r, g, b] = [c, 0, x];
+  const hex = [r, g, b]
+    .map((channel) => Math.round((channel + m) * 255).toString(16).padStart(2, "0"))
+    .join("");
+  return `#${hex}`;
 }
 
-function initials(name) {
-  const parts = name.trim().split(/\s+/).filter(Boolean);
-  if (!parts.length) return "?";
-  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
-  return `${parts[0][0]}${parts[1][0]}`.toUpperCase();
+function colorChannels(color) {
+  const hex = String(color || "").trim();
+  const match = hex.match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i);
+  if (!match) return null;
+  let body = match[1];
+  if (body.length === 3) body = body.split("").map((part) => part + part).join("");
+  const value = Number.parseInt(body, 16);
+  return [(value >> 16) & 255, (value >> 8) & 255, value & 255];
 }
 
-function avatar(name, small) {
-  const look = lookMap.get(name);
-  const accessory = look ? accessoryName(look.accessory) : "";
-  return el(
-    "span",
-    {
-      class: small ? "avatar sm" : "avatar",
-      style: `background:${avatarBackground(name)};border-radius:${shapeRadius(look && look.shape)}`,
-      "data-accessory": accessory || null,
-      "aria-hidden": "true",
-    },
-    [initials(name)],
+function isVeryDark(color) {
+  const rgb = colorChannels(color);
+  if (!rgb) return false;
+  return (0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]) / 255 < 0.22;
+}
+
+function resolveLook(name) {
+  const base = DEFAULT_LOOKS[name] || { shape: "sphere", color: hashColor(name), accessory: "none" };
+  const feed = lookMap.get(name);
+  if (!feed) return { ...base };
+  const shape = normalizeShape(feed.shape);
+  const color = safeColor(feed.color);
+  const accessory = normalizeAccessory(feed.accessory);
+  return {
+    shape: shape || base.shape,
+    color: color || base.color,
+    accessory: feed.accessory != null && String(feed.accessory).trim() !== "" ? accessory || "none" : base.accessory,
+  };
+}
+
+function svgEl(tag, attrs) {
+  const node = document.createElementNS(SVG_NS, tag);
+  for (const [key, value] of Object.entries(attrs || {})) {
+    if (value != null) node.setAttribute(key, String(value));
+  }
+  return node;
+}
+
+function starPoints(cx, cy, outer, inner, points) {
+  const pts = [];
+  const count = points * 2;
+  for (let i = 0; i < count; i += 1) {
+    const radius = i % 2 === 0 ? outer : inner;
+    const angle = -Math.PI / 2 + (i * 2 * Math.PI) / count;
+    pts.push([cx + Math.cos(angle) * radius, cy + Math.sin(angle) * radius]);
+  }
+  return pts;
+}
+
+function roundedPath(points) {
+  const mids = points.map((point, index) => {
+    const next = points[(index + 1) % points.length];
+    return [(point[0] + next[0]) / 2, (point[1] + next[1]) / 2];
+  });
+  let path = `M ${mids[0][0].toFixed(2)} ${mids[0][1].toFixed(2)}`;
+  for (let i = 0; i < points.length; i += 1) {
+    const control = points[(i + 1) % points.length];
+    const end = mids[(i + 1) % points.length];
+    path += ` Q ${control[0].toFixed(2)} ${control[1].toFixed(2)} ${end[0].toFixed(2)} ${end[1].toFixed(2)}`;
+  }
+  return `${path} Z`;
+}
+
+function bodyNodes(shape, color) {
+  const stroke = isVeryDark(color) ? "rgba(255,255,255,0.86)" : "none";
+  const width = stroke === "none" ? null : "2.4";
+  const nodes = [];
+  const add = (tag, attrs) => {
+    const node = svgEl(tag, { fill: color, stroke, "stroke-width": width, ...attrs });
+    nodes.push(node);
+    return node;
+  };
+  if (shape === "rounded_square") add("rect", { x: "12", y: "14", width: "40", height: "40", rx: "12" });
+  else if (shape === "bubble") {
+    add("path", {
+      d: "M16 28c0-10 8-18 18-18 9 0 18 6 18 16 0 9-6 15-14 16l-1 10-8-10c-8-1-13-6-13-14z",
+    });
+  } else if (shape === "hexagon") {
+    add("polygon", { points: "32,8 54,20 54,44 32,56 10,44 10,20" });
+  } else if (shape === "pill") add("rect", { x: "4", y: "20", width: "56", height: "24", rx: "12" });
+  else if (shape === "clover") {
+    add("circle", { cx: "32", cy: "18", r: "13" });
+    add("circle", { cx: "18", cy: "34", r: "13" });
+    add("circle", { cx: "46", cy: "34", r: "13" });
+    add("circle", { cx: "32", cy: "48", r: "13" });
+  } else if (shape === "star6") {
+    add("path", { d: roundedPath(starPoints(32, 34, 24, 12, 6)) });
+  } else add("circle", { cx: "32", cy: "34", r: "18" });
+  return nodes;
+}
+
+function faceAnchor(shape) {
+  if (shape === "bubble") return { top: 10, eyeY: 30, spread: 7 };
+  if (shape === "pill") return { top: 20, eyeY: 32, spread: 9 };
+  if (shape === "clover") return { top: 6, eyeY: 33, spread: 6 };
+  if (shape === "hexagon") return { top: 8, eyeY: 34, spread: 7.2 };
+  if (shape === "star6") return { top: 12, eyeY: 35, spread: 6 };
+  if (shape === "rounded_square") return { top: 14, eyeY: 35, spread: 7.2 };
+  return { top: 16, eyeY: 35, spread: 7 };
+}
+
+function avatar(name, small, status) {
+  const look = resolveLook(name);
+  const anchor = faceAnchor(look.shape);
+  const id = `m${(mascotSeq += 1)}`;
+  const svg = svgEl("svg", { class: "mascot", viewBox: "0 0 64 64", "aria-hidden": "true" });
+  const defs = svgEl("defs");
+  const gradient = svgEl("linearGradient", { id: `${id}-shine`, x1: "0", y1: "0", x2: "0", y2: "1" });
+  gradient.append(
+    svgEl("stop", { offset: "0", "stop-color": "white", "stop-opacity": "0.72" }),
+    svgEl("stop", { offset: "0.42", "stop-color": "white", "stop-opacity": "0.08" }),
+    svgEl("stop", { offset: "1", "stop-color": "white", "stop-opacity": "0" }),
   );
+  defs.append(gradient);
+  svg.append(defs);
+  for (const node of bodyNodes(look.shape, look.color)) svg.append(node);
+  const shine = svgEl("ellipse", {
+    cx: "32",
+    cy: String(anchor.top + 8),
+    rx: look.shape === "pill" ? "16" : "12",
+    ry: "7",
+    fill: `url(#${id}-shine)`,
+  });
+  svg.append(shine);
+  const left = 32 - anchor.spread;
+  const right = 32 + anchor.spread;
+  const eyes = svgEl("g", { class: "eyes" });
+  for (const cx of [left, right]) {
+    eyes.append(svgEl("ellipse", { cx: String(cx), cy: String(anchor.eyeY), rx: "4.6", ry: "5.4", fill: "#fff" }));
+    eyes.append(
+      svgEl("ellipse", {
+        cx: String(cx + 0.7),
+        cy: String(anchor.eyeY + 0.8),
+        rx: "1.7",
+        ry: "2.1",
+        fill: "#1a1a1d",
+      }),
+    );
+  }
+  svg.append(eyes);
+  const frame = isVeryDark(look.color) ? "rgba(255,255,255,0.92)" : "#1a1a1d";
+  if (look.accessory === "antenna") {
+    svg.append(
+      svgEl("line", {
+        x1: "32",
+        y1: String(anchor.top + 1),
+        x2: "32",
+        y2: "5",
+        stroke: look.color,
+        "stroke-width": "2.2",
+        "stroke-linecap": "round",
+      }),
+      svgEl("circle", { cx: "32", cy: "4.5", r: "3.1", fill: look.color, stroke: isVeryDark(look.color) ? "rgba(255,255,255,0.8)" : "none", "stroke-width": "1.2" }),
+    );
+  } else if (look.accessory === "glasses") {
+    const glasses = svgEl("g", { fill: "none", stroke: frame, "stroke-width": "1.6" });
+    glasses.append(
+      svgEl("circle", { cx: String(left), cy: String(anchor.eyeY), r: "6.3" }),
+      svgEl("circle", { cx: String(right), cy: String(anchor.eyeY), r: "6.3" }),
+      svgEl("path", { d: `M ${left + 6.3} ${anchor.eyeY} H ${right - 6.3}` }),
+    );
+    svg.append(glasses);
+  } else if (look.accessory === "bow") {
+    const bow = svgEl("g", { transform: `translate(32 ${Math.max(6, anchor.top - 1)})` });
+    bow.append(
+      svgEl("ellipse", { cx: "-5", cy: "0", rx: "5", ry: "3.1", fill: "#fff", transform: "rotate(-28)" }),
+      svgEl("ellipse", { cx: "5", cy: "0", rx: "5", ry: "3.1", fill: "#fff", transform: "rotate(28)" }),
+      svgEl("circle", { r: "2.1", fill: look.color, stroke: "#fff", "stroke-width": "0.6" }),
+    );
+    svg.append(bow);
+  }
+  const wrap = el("span", { class: small ? "mascot-wrap sm" : "mascot-wrap", "data-status": status || "idle", "aria-hidden": "true" }, [svg]);
+  if (status === "working") {
+    wrap.append(el("span", { class: "think" }, [el("i"), el("i"), el("i")]));
+  }
+  return wrap;
 }
 
 function formatRelative(unix) {
@@ -622,8 +797,13 @@ function showDemo() {
     line(60, { chat: { "Grok Bot": "grokbot://open" } }),
     line(50, {
       looks: {
-        "Grok Bot": { shape: "squircle", color: "#1473e6", accessory: "ring" },
-        "Deal Hunter": { shape: "rounded", color: "#e0a100", accessory: "dot" },
+        "Grok Bot": { shape: "sphere", color: "#1E86FC", accessory: "antenna" },
+        "Moodle Bot": { shape: "rounded_square", color: "#FD690F", accessory: "glasses" },
+        "Remnote Bot": { shape: "bubble", color: "#8F59F9", accessory: "none" },
+        "Obsidian Bot": { shape: "hexagon", color: "#000000", accessory: "none" },
+        "Kalender Bot": { shape: "pill", color: "#14C16F", accessory: "none" },
+        "Slack Bot": { shape: "clover", color: "#F93498", accessory: "none" },
+        "Deal Hunter": { shape: "star6", color: "#F59312", accessory: "bow" },
       },
     }),
   ]) {
@@ -852,7 +1032,7 @@ function renderBoard() {
           attention.map((bot) => {
             const href = chatLinks.get(bot.name) || "";
             return el(href ? "a" : "article", { class: href ? "chip" : "chip", "data-status": bot.status, ...linkProps(href) }, [
-              avatar(bot.name, true),
+              avatar(bot.name, true, bot.status),
               el("span", null, [el("strong", null, [bot.name]), el("span", null, [bot.step || STATUS[bot.status]])]),
             ]);
           }),
@@ -884,7 +1064,7 @@ function renderBot(bot) {
   const shown = bot.seen ? bot.status : "unknown";
   const href = chatLinks.get(bot.name) || "";
   return el(href ? "a" : "article", { class: "bot", "data-bot": bot.name, "data-status": shown, ...linkProps(href) }, [
-    avatar(bot.name),
+    avatar(bot.name, false, shown === "unknown" ? "idle" : shown),
     el("div", null, [
       el("h3", null, [bot.name]),
       el("p", { class: "step" }, [bot.seen ? bot.step || "Kein Schritt genannt" : "Noch keine Meldung"]),
@@ -1026,30 +1206,35 @@ function bind() {
   window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
     if (currentTheme() === "system") applyTheme("system");
   });
-  ui.install.addEventListener("click", async () => {
-    if (!deferredInstall) {
-      openSettings();
-      return;
-    }
+  ui.installHintAction.addEventListener("click", async () => {
+    if (!deferredInstall) return;
     deferredInstall.prompt();
-    await deferredInstall.userChoice;
+    const choice = await deferredInstall.userChoice;
     deferredInstall = null;
-    ui.install.hidden = true;
+    if (choice && choice.outcome === "accepted") ui.installHint.hidden = true;
+  });
+  ui.installHintDismiss.addEventListener("click", () => {
+    storageSet(INSTALL_HINT_KEY, "off");
+    ui.installHint.hidden = true;
   });
   window.addEventListener("beforeinstallprompt", (event) => {
     event.preventDefault();
     deferredInstall = event;
-    ui.install.hidden = false;
+    syncInstallHint();
   });
   window.addEventListener("appinstalled", () => {
     deferredInstall = null;
     ui.install.hidden = true;
+    ui.installHint.hidden = true;
   });
+  for (const query of ["(display-mode: browser)", "(display-mode: standalone)", "(display-mode: window-controls-overlay)"]) {
+    window.matchMedia(query).addEventListener("change", syncInstallHint);
+  }
 }
 
-function setupInstallButton() {
-  const standalone = window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone === true;
-  if (!standalone) ui.install.hidden = false;
+function syncInstallHint() {
+  const inBrowser = window.matchMedia("(display-mode: browser)").matches;
+  ui.installHint.hidden = !inBrowser || storageGet(INSTALL_HINT_KEY) === "off";
 }
 
 function registerWorker() {
@@ -1061,7 +1246,7 @@ function registerWorker() {
 
 applyTheme(currentTheme());
 bind();
-setupInstallButton();
+syncInstallHint();
 applyRoute();
 registerWorker();
 setInterval(tickTimes, 30000);

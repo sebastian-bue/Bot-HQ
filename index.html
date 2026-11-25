@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="description" content="HQ ist eine installierbare Tafel für den Status deiner Bots." />
-    <meta name="theme-color" content="#e7edf5" />
+    <meta name="theme-color" content="#0e0e10" />
     <meta name="color-scheme" content="light dark" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="mobile-web-app-capable" content="yes" />
@@ -25,18 +25,17 @@
             theme === "dark" ||
             (theme !== "light" && window.matchMedia("(prefers-color-scheme: dark)").matches);
           var meta = document.querySelector('meta[name="theme-color"]');
-          if (meta) meta.setAttribute("content", dark ? "#07090d" : "#e7edf5");
+          if (meta) meta.setAttribute("content", dark ? "#0e0e10" : "#f3f3f5");
         } catch (error) {}
       })();
     </script>
   </head>
   <body>
-    <div class="bg" aria-hidden="true">
-      <span class="orb orb-a"></span>
-      <span class="orb orb-b"></span>
-      <span class="orb orb-c"></span>
-    </div>
     <a class="skip" href="#inhalt">Zum Inhalt</a>
+    <p id="install-hint" class="install-hint" hidden>
+      <button type="button" id="install-hint-action">Als App installieren für Vollbild</button>
+      <button type="button" id="install-hint-dismiss" aria-label="Hinweis schließen">×</button>
+    </p>
     <div class="app">
       <header class="topbar glass">
         <div class="brand">
