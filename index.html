@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="description" content="HQ ist eine installierbare Tafel für den Status deiner Bots." />
+    <meta name="theme-color" content="#e7edf5" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="HQ" />
+    <title>HQ</title>
+    <link rel="manifest" href="manifest.webmanifest" />
+    <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="icons/apple-touch-icon.png" />
+    <link rel="stylesheet" href="app.css" />
+    <script>
+      (function () {
+        try {
+          var theme = localStorage.getItem("hq.theme") || "system";
+          if (theme !== "light" && theme !== "dark" && theme !== "system") theme = "system";
+          document.documentElement.setAttribute("data-theme", theme);
+          var dark =
+            theme === "dark" ||
+            (theme !== "light" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+          var meta = document.querySelector('meta[name="theme-color"]');
+          if (meta) meta.setAttribute("content", dark ? "#07090d" : "#e7edf5");
+        } catch (error) {}
+      })();
+    </script>
+  </head>
+  <body>
+    <div class="bg" aria-hidden="true">
+      <span class="orb orb-a"></span>
+      <span class="orb orb-b"></span>
+      <span class="orb orb-c"></span>
+    </div>
+    <a class="skip" href="#inhalt">Zum Inhalt</a>
+    <div class="app">
+      <header class="topbar glass">
+        <div class="brand">
+          <span class="mark" aria-hidden="true">HQ</span>
+          <div>
+            <h1>HQ</h1>
+            <p id="subtitle">Bot-Status</p>
+          </div>
+        </div>
+        <div class="top-actions">
+          <p id="connection" class="pill" data-state="empty" role="status">Bereit</p>
+          <button type="button" id="reload" class="icon-btn" aria-label="Neu laden" hidden>
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path
+                d="M20 12a8 8 0 1 1-2.2-5.5"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.8"
+                stroke-linecap="round"
+              />
+              <path d="M20 4v5h-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+          </button>
+          <button type="button" id="install" class="button ghost" hidden>Installieren</button>
+          <button type="button" id="open-settings" class="icon-btn" aria-label="Einstellungen">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M4 7h16M4 12h16M4 17h16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+              <circle cx="9" cy="7" r="2.1" fill="currentColor" />
+              <circle cx="15" cy="12" r="2.1" fill="currentColor" />
+              <circle cx="8" cy="17" r="2.1" fill="currentColor" />
+            </svg>
+          </button>
+        </div>
+      </header>
+      <main id="inhalt">
+        <p id="banner" class="banner" hidden></p>
+        <section id="counters" class="counters" aria-label="Zähler" hidden></section>
+        <section id="attention" class="attention glass" aria-label="Braucht dich" hidden></section>
+        <section id="notes" class="notes glass" hidden></section>
+        <section id="empty" class="empty glass">
+          <h2>Kein Thema gewählt</h2>
+          <p>
+            Trag ein ntfy-Thema in den Einstellungen ein oder häng <code>#thema</code> an die Adresse.
+            <code>#demo</code> zeigt Beispieldaten, ohne ein echtes Thema zu speichern.
+          </p>
+          <div class="actions">
+            <button type="button" class="primary" id="empty-settings">Einstellungen</button>
+            <a class="button ghost" href="#demo">Demo ansehen</a>
+          </div>
+        </section>
+        <div id="teams" class="teams" hidden></div>
+        <p class="fineprint">Verlauf 12 Stunden · Live über ntfy · Thema nur auf diesem Gerät</p>
+      </main>
+    </div>
+    <dialog id="settings" aria-labelledby="settings-title">
+      <form id="settings-form" class="sheet glass" method="dialog" autocomplete="off">
+        <div class="sheet-head">
+          <h2 id="settings-title">Einstellungen</h2>
+          <button type="button" id="close-settings" class="icon-btn" aria-label="Schließen">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+            </svg>
+          </button>
+        </div>
+        <label for="topic-input">ntfy-Thema</label>
+        <input
+          id="topic-input"
+          name="topic"
+          type="text"
+          maxlength="64"
+          spellcheck="false"
+          autocapitalize="off"
+          autocorrect="off"
+          autocomplete="off"
+          placeholder="Thema"
+          enterkeyhint="done"
+        />
+        <p id="topic-error" class="field-error" hidden></p>
+        <p class="hint">
+          Buchstaben, Zahlen, Bindestrich und Unterstrich. Gespeichert nur in diesem Browser. Nach dem
+          Speichern steht es auch als <code>#thema</code> in der Adresse, nie im Repository.
+        </p>
+        <fieldset>
+          <legend>Erscheinungsbild</legend>
+          <div class="segment" role="radiogroup" aria-label="Erscheinungsbild">
+            <button type="button" role="radio" data-theme-choice="system" aria-checked="true">System</button>
+            <button type="button" role="radio" data-theme-choice="light" aria-checked="false" tabindex="-1">Hell</button>
+            <button type="button" role="radio" data-theme-choice="dark" aria-checked="false" tabindex="-1">Dunkel</button>
+          </div>
+        </fieldset>
+        <p class="hint" id="install-hint">
+          Installation: Unter Windows in Chrome oder Edge auf Installieren tippen. Auf dem iPad: Teilen, dann
+          „Zum Home-Bildschirm“.
+        </p>
+        <div class="sheet-actions">
+          <button type="submit" class="primary">Speichern</button>
+          <button type="button" id="clear-topic" class="button ghost">Thema entfernen</button>
+          <a class="button ghost" href="#demo">Demo</a>
+        </div>
+      </form>
+    </dialog>
+    <noscript>
+      <p class="noscript glass">HQ braucht JavaScript. Es bleibt eine statische Seite ohne Konto.</p>
+    </noscript>
+    <script src="app.js" defer></script>
+  </body>
+</html>
