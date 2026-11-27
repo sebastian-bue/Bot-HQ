@@ -79,6 +79,7 @@ const ui = {
   banner: document.querySelector("#banner"),
   counters: document.querySelector("#counters"),
   usage: document.querySelector("#usage"),
+  storage: document.querySelector("#storage"),
   attention: document.querySelector("#attention"),
   empty: document.querySelector("#empty"),
   teams: document.querySelector("#teams"),
@@ -112,6 +113,7 @@ let chatLinks = new Map();
 let chatTime = 0;
 let lookMap = new Map();
 let looksTime = 0;
+let storageByMachine = new Map();
 
 function storageGet(key) {
   try {
@@ -506,6 +508,45 @@ function formatPct(value) {
   return `${new Intl.NumberFormat("de-DE", { maximumFractionDigits: 1 }).format(value)} %`;
 }
 
+function formatGb(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "";
+  const formatted = new Intl.NumberFormat("de-DE", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 1,
+  }).format(number);
+  return `${formatted} GB`;
+}
+
+function formatTotal(value) {
+  const text = formatGb(value);
+  if (!text || Number(value) < 1024) return text;
+  const tb = new Intl.NumberFormat("de-DE", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 2,
+  }).format(Number(value) / 1024);
+  return `${text} (${tb} TB)`;
+}
+
+function formatStamp(iso) {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "";
+  return new Intl.DateTimeFormat("de-DE", {
+    timeZone: "Europe/Berlin",
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(date);
+}
+
+function storageLevel(pct) {
+  if (pct >= 90) return "crit";
+  if (pct >= 75) return "warn";
+  return "ok";
+}
+
 function clampPct(value) {
   const number = Number(value);
   if (!Number.isFinite(number)) return null;
@@ -538,6 +579,53 @@ function readShares(source) {
   return shares;
 }
 
+function finiteGb(value) {
+  if (value == null || value === "" || typeof value === "boolean") return null;
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < 0) return null;
+  return number;
+}
+
+function optionalPct(value) {
+  if (value == null || value === "") return null;
+  return clampPct(value);
+}
+
+function readDrive(entry) {
+  if (!isRecord(entry)) return null;
+  const drive = typeof entry.drive === "string" ? entry.drive.trim() : "";
+  if (!drive) return null;
+  const label = typeof entry.label === "string" ? entry.label.trim().replace(/\s+/g, " ") : "";
+  let usedGb = finiteGb(entry.used_gb);
+  let freeGb = finiteGb(entry.free_gb);
+  let totalGb = finiteGb(entry.total_gb);
+  let usedPct = optionalPct(entry.used_pct);
+  if (totalGb == null && usedGb != null && freeGb != null) totalGb = usedGb + freeGb;
+  if (usedGb == null && totalGb != null && freeGb != null) usedGb = Math.max(0, totalGb - freeGb);
+  if (freeGb == null && totalGb != null && usedGb != null) freeGb = Math.max(0, totalGb - usedGb);
+  if (usedPct == null && totalGb > 0 && usedGb != null) usedPct = clampPct((usedGb / totalGb) * 100);
+  if (usedPct == null) return null;
+  return { drive, label, usedGb, freeGb, totalGb, usedPct };
+}
+
+function readStorage(data) {
+  const type = typeof data.type === "string" ? data.type.trim().toLowerCase() : "";
+  if (type !== "storage") return null;
+  const machine = typeof data.machine === "string" ? data.machine.trim().replace(/\s+/g, " ") : "";
+  if (!machine || !Array.isArray(data.drives)) return null;
+  const drives = [];
+  for (const entry of data.drives) {
+    const drive = readDrive(entry);
+    if (drive) drives.push(drive);
+  }
+  if (!drives.length) return null;
+  return {
+    machine,
+    updatedAt: typeof data.updated_at === "string" ? data.updated_at.trim() : "",
+    drives,
+  };
+}
+
 function readPlan(data) {
   const candidates = [];
   if (isRecord(data.usage)) candidates.push(data.usage);
@@ -563,6 +651,8 @@ function interpretObject(data) {
   const parts = [];
   const plan = readPlan(data);
   if (plan) parts.push({ kind: "plan", plan });
+  const storage = readStorage(data);
+  if (storage) parts.push({ kind: "storage", storage });
   if (Array.isArray(data.roster)) {
     parts.push({
       kind: "roster",
@@ -630,6 +720,7 @@ function resetMeta() {
   chatTime = 0;
   lookMap = new Map();
   looksTime = 0;
+  storageByMachine = new Map();
 }
 
 function applyRoster(names, time) {
@@ -693,6 +784,28 @@ function applyPlan(plan, time) {
   usagePlan = plan;
 }
 
+function storageInstant(iso, envelopeTime) {
+  if (typeof iso === "string" && iso) {
+    const ms = Date.parse(iso);
+    if (Number.isFinite(ms)) return ms;
+  }
+  const sec = Number(envelopeTime) || 0;
+  return sec > 0 ? sec * 1000 : 0;
+}
+
+function applyStorage(storage, time) {
+  const updatedMs = storageInstant(storage.updatedAt, time);
+  const prev = storageByMachine.get(storage.machine);
+  if (prev && updatedMs < prev.updatedMs) return;
+  const dated = storage.updatedAt && Number.isFinite(Date.parse(storage.updatedAt));
+  storageByMachine.set(storage.machine, {
+    machine: storage.machine,
+    updatedAt: dated ? storage.updatedAt : updatedMs ? new Date(updatedMs).toISOString() : "",
+    updatedMs,
+    drives: storage.drives,
+  });
+}
+
 function applyStatus(part, time) {
   const bot = ensureBot(part.bot);
   if (!bot) return;
@@ -711,6 +824,7 @@ function applyParsed(parsed, time) {
     else if (part.kind === "groups") applyGroups(part.map, time);
     else if (part.kind === "chat") applyChat(part.map, time);
     else if (part.kind === "looks") applyLooks(part.map, time);
+    else if (part.kind === "storage") applyStorage(part.storage, time);
     else if (part.kind === "status") applyStatus(part, time);
   }
 }
@@ -724,7 +838,7 @@ function ingest(envelope) {
       applyParsed(parsePayload(envelope.message), time);
       return;
     }
-    if (envelope.bot || envelope.status || envelope.name || envelope.usage || envelope.roster || envelope.groups || envelope.chat || envelope.looks || envelope.total_used_pct != null) {
+    if (envelope.bot || envelope.status || envelope.name || envelope.usage || envelope.roster || envelope.groups || envelope.chat || envelope.looks || envelope.total_used_pct != null || envelope.type === "storage" || Array.isArray(envelope.drives)) {
       applyParsed(parsePayload(envelope), time);
     }
   } catch {
@@ -805,6 +919,15 @@ function showDemo() {
         "Slack Bot": { shape: "clover", color: "#F93498", accessory: "none" },
         "Deal Hunter": { shape: "star6", color: "#F59312", accessory: "bow" },
       },
+    }),
+    line(40, {
+      type: "storage",
+      machine: "DrunkCarlsen",
+      updated_at: new Date((now - 4 * 60) * 1000).toISOString(),
+      drives: [
+        { drive: "C:", label: "System", used_gb: 826.4, free_gb: 1035.6, total_gb: 1862, used_pct: 44.4 },
+        { drive: "G:", label: "Data", used_gb: 141.7, free_gb: 258.3, total_gb: 400, used_pct: 35.4 },
+      ],
     }),
   ]) {
     ingest(item);
@@ -1002,6 +1125,86 @@ function renderUsage() {
   );
 }
 
+function renderDrive(drive) {
+  const level = storageLevel(drive.usedPct);
+  const pct = formatPct(drive.usedPct);
+  const name = drive.label ? `${drive.drive} ${drive.label}` : drive.drive;
+  const metaParts = [
+    drive.usedGb != null ? `${formatGb(drive.usedGb)} belegt` : "",
+    drive.freeGb != null ? `${formatGb(drive.freeGb)} frei` : "",
+    drive.totalGb != null ? `${formatTotal(drive.totalGb)} gesamt` : "",
+  ].filter(Boolean);
+  const metaKids = [];
+  metaParts.forEach((part, index) => {
+    if (index) metaKids.push(" · ");
+    metaKids.push(el("span", null, [part]));
+  });
+  const width = Math.min(100, Math.max(0, drive.usedPct));
+  return el("li", { class: "drive" }, [
+    el("div", { class: "drive-top" }, [
+      el("span", { class: "drive-name" }, [
+        drive.drive,
+        drive.label ? el("span", { class: "drive-label" }, [drive.label]) : null,
+      ]),
+      el("span", { class: "drive-pct", "data-level": level }, [pct]),
+    ]),
+    el(
+      "span",
+      {
+        class: "drive-track",
+        "data-level": level,
+        role: "meter",
+        "aria-valuemin": "0",
+        "aria-valuemax": "100",
+        "aria-valuenow": String(Math.round(drive.usedPct * 10) / 10),
+        "aria-label": `${name}, ${pct} belegt`,
+      },
+      [el("span", { style: `width:${width}%`, "aria-hidden": "true" })],
+    ),
+    metaKids.length ? el("p", { class: "drive-meta" }, metaKids) : null,
+  ]);
+}
+
+function renderMachine(machine) {
+  const stamp = machine.updatedAt ? formatStamp(machine.updatedAt) : "";
+  const unix = machine.updatedMs ? Math.floor(machine.updatedMs / 1000) : 0;
+  const when = unix
+    ? el("p", { class: "storage-when" }, [
+        "Aktualisiert ",
+        el(
+          "time",
+          {
+            datetime: machine.updatedAt || new Date(machine.updatedMs).toISOString(),
+            "data-unix": String(unix),
+          },
+          [formatRelative(unix)],
+        ),
+        stamp ? ` · ${stamp}` : null,
+      ])
+    : stamp
+      ? el("p", { class: "storage-when" }, [`Aktualisiert ${stamp}`])
+      : null;
+  return el("article", { class: "machine" }, [
+    el("div", { class: "machine-head" }, [el("h3", null, [machine.machine]), when]),
+    el("ul", { class: "drives" }, machine.drives.map(renderDrive)),
+  ]);
+}
+
+function renderStorage() {
+  const machines = [...storageByMachine.values()].sort((a, b) => a.machine.localeCompare(b.machine, "de"));
+  ui.storage.hidden = false;
+  ui.storage.className = "storage-card glass";
+  ui.storage.replaceChildren(
+    el("div", { class: "section-head" }, [
+      el("h2", null, ["Speicherplatz"]),
+      machines.length ? el("span", { class: "team-count" }, [String(machines.length)]) : null,
+    ]),
+    machines.length
+      ? el("div", { class: "storage-list" }, machines.map(renderMachine))
+      : el("p", { class: "calm" }, ["Noch keine Speicher-Meldung."]),
+  );
+}
+
 function renderBoard() {
   const counts = { working: 0, done: 0, idle: 0, waiting_user: 0, error: 0 };
   for (const bot of bots.values()) {
@@ -1015,6 +1218,7 @@ function renderBoard() {
   );
 
   renderUsage();
+  renderStorage();
 
   const attention = [...bots.values()]
     .filter((bot) => bot.seen && (bot.status === "waiting_user" || bot.status === "error"))
@@ -1087,6 +1291,7 @@ function snapshot() {
     groups: [...groupOverrides],
     chat: [...chatLinks],
     looks: [...lookMap],
+    storage: [...storageByMachine.values()],
     bots: [...bots.values()],
   });
 }
@@ -1106,11 +1311,14 @@ function render() {
   if (!board) {
     ui.counters.hidden = true;
     ui.usage.hidden = true;
+    ui.storage.hidden = true;
     ui.attention.hidden = true;
     ui.teams.hidden = true;
     ui.counters.replaceChildren();
     ui.usage.replaceChildren();
     ui.usage.className = "";
+    ui.storage.replaceChildren();
+    ui.storage.className = "";
     ui.attention.replaceChildren();
     ui.teams.replaceChildren();
     return;

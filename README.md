@@ -18,7 +18,7 @@ Jede Statuszeile ist JSON:
 {"bot":"Grok Bot","status":"working","step":"kurze Bezeichnung"}
 ```
 
-`status` ist einer von `working`, `done`, `idle`, `waiting_user`, `error`. Weitere Zeilen: `usage` (Wochenplan mit `total_used_pct`, `resets_at`, `bots`), `roster`, `groups`, `chat` und `looks`. Unbekannte Zeilen werden still ignoriert.
+`status` ist einer von `working`, `done`, `idle`, `waiting_user`, `error`. Weitere Zeilen: `usage` (Wochenplan mit `total_used_pct`, `resets_at`, `bots`), `roster`, `groups`, `chat`, `looks` und `storage` (Speicherplatz je Rechner: `machine`, `updated_at`, `drives` mit belegtem, freiem und gesamtem Platz in GB). Pro Rechner gilt der neueste Stand nach `updated_at`. Unbekannte Zeilen werden still ignoriert.
 
 - Verlauf: `https://ntfy.sh/<THEMA>/json?poll=1&since=12h`
 - Live: `https://ntfy.sh/<THEMA>/sse`
