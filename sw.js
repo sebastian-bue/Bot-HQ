@@ -1,4 +1,4 @@
-const CACHE = 'hq-shell-v3';
+const CACHE = 'hq-shell-v4';
 
 const SHELL = [
   './',
